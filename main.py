@@ -1,7 +1,11 @@
 import asyncio
+import sys
 from dotenv import load_dotenv
 
 load_dotenv()
+
+if sys.stdout.encoding != "utf-8":
+    sys.stdout.reconfigure(encoding="utf-8")
 
 from agent.graph import app
 
@@ -28,4 +32,4 @@ async def run(user_query: str):
 
 
 if __name__ == "__main__":
-    asyncio.run(run("이 게임을 서비스 종료하겠다는 의견이나 글들"))
+    asyncio.run(run("Solo Leveling IP를 게임으로 만들어달라는 팬들의 니즈나 수요가 있는지"))
