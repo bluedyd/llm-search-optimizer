@@ -37,7 +37,8 @@ async def plan_queries_node(state: AgentState) -> dict:
         HumanMessage(content=f"User request: {state['user_query']}"),
     ])
     result = parse_json(response.content)
-    return {"search_queries": result.get("queries", [])}
+    queries = result if isinstance(result, list) else result.get("queries", [])
+    return {"search_queries": queries}
 
 
 # ── 2. Search (쿼리별 병렬) ───────────────────────────────────────────────────
@@ -47,11 +48,15 @@ def dispatch_searches(state: AgentState) -> list[Send]:
 
 
 async def search_node(state: dict) -> dict:
-    urls = await search_reddit_urls(state["_query"], before_date=state.get("before_date"))
+    urls = await search_reddit_urls(
+        state["_query"],
+        before_date=state.get("before_date"),
+        after_date=state.get("after_date"),
+    )
     return {"post_urls": urls}
 
 
-# ── 3. Fetch Posts ────────────────────────────────────────────────────────────
+# ── 3. Fetch Posts (병렬 + Semaphore) ────────────────────────────────────────
 
 async def fetch_posts_node(state: AgentState) -> dict:
     # 중복 URL 제거
@@ -62,13 +67,21 @@ async def fetch_posts_node(state: AgentState) -> dict:
             seen.add(url)
             unique_urls.append(url)
 
-    # 상위 10개 포스트 크롤링 (rate limit 고려해 순차 처리)
-    posts = []
-    for url in unique_urls[:10]:
-        post = await fetch_post_details(url)
-        if post:
-            posts.append(post)
-        await asyncio.sleep(0.5)
+    # 최대 3개 동시 요청으로 Reddit rate limit 회피
+    sem = asyncio.Semaphore(3)
+
+    async def fetch_with_limit(url):
+        async with sem:
+            return await fetch_post_details(url)
+
+    results = await asyncio.gather(*[fetch_with_limit(u) for u in unique_urls[:10]])
+    posts = [p for p in results if p is not None]
+
+    # before_date 기준 후처리 필터링 (Serper 날짜 필터 보완)
+    if state.get("before_date"):
+        posts = [p for p in posts if p["created_at"] < state["before_date"]]
+    if state.get("after_date"):
+        posts = [p for p in posts if p["created_at"] > state["after_date"]]
 
     return {"posts": posts}
 
@@ -88,7 +101,7 @@ async def analyze_node(state: AgentState) -> dict:
         posts_text += (
             f"\n### [{p['created_at']}] {p['title']}"
             f"\n r/{p['subreddit']} | 추천수: {p['score']} | 댓글: {p['num_comments']}"
-            f"\n 본문: {p['body'][:200]}"
+            f"\n 본문: {p['body'][:150]}"
             f"\n 상위 댓글:\n{comments_text}\n"
         )
 

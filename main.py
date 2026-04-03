@@ -7,17 +7,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from agent.graph import app
+from agent.state import initial_state
 
 
-async def run(user_query: str, before_date: str = None):
-    result = await app.ainvoke({
-        "user_query": user_query,
-        "before_date": before_date,
-        "search_queries": [],
-        "post_urls": [],
-        "posts": [],
-        "analysis": "",
-    })
+async def run(user_query: str, before_date: str = None, after_date: str = None):
+    result = await app.ainvoke(initial_state(user_query, before_date, after_date))
 
     print(f"\n{'='*60}")
     print(f"검색 의도: {result['user_query']}")
@@ -26,7 +20,6 @@ async def run(user_query: str, before_date: str = None):
     print(f"{'='*60}\n")
     print(result["analysis"])
 
-    # exps/ 하위에 저장
     os.makedirs("exps", exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filepath = f"exps/{timestamp}.json"
@@ -34,6 +27,7 @@ async def run(user_query: str, before_date: str = None):
         json.dump({
             "user_query": result["user_query"],
             "before_date": before_date,
+            "after_date": after_date,
             "search_queries": result["search_queries"],
             "post_urls": result["post_urls"],
             "posts": result["posts"],
