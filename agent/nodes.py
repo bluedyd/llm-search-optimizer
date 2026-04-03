@@ -1,110 +1,110 @@
 import json
 import re
+import asyncio
 from langchain_groq import ChatGroq
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.types import Send
 
 from .state import AgentState
-from .tools import search_reddit
+from .tools import search_reddit_urls, fetch_post_details
 
 llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
 
 
-def parse_json(text: str) -> dict:
-    """텍스트에서 JSON 객체 추출 후 파싱"""
+def parse_json(text: str):
     text = text.strip()
-    # ```json ... ``` 코드블록 우선 시도
     match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
     if match:
         return json.loads(match.group(1).strip())
-    # 중괄호로 감싸진 JSON 객체 추출
+    match = re.search(r"\[[\s\S]*\]", text)
+    if match:
+        return json.loads(match.group(0))
     match = re.search(r"\{[\s\S]*\}", text)
     if match:
         return json.loads(match.group(0))
-    raise ValueError(f"No JSON found in response: {text[:200]}")
+    raise ValueError(f"No JSON found: {text[:200]}")
 
 
 # ── 1. Query Planner ─────────────────────────────────────────────────────────
 
 async def plan_queries_node(state: AgentState) -> dict:
-    """자연어 요청 → 검색어 목록으로 변환"""
     response = await llm.ainvoke([
         SystemMessage(content=(
-            "You are a search query generator for Reddit opinion research. "
+            "You are a search query generator for Reddit research. "
             "Convert the user's request into 3-5 effective English search queries. "
-            "Return JSON: {\"queries\": [\"query1\", \"query2\", ...]}"
+            'Return JSON: {"queries": ["query1", "query2", ...]}'
         )),
         HumanMessage(content=f"User request: {state['user_query']}"),
     ])
-
     result = parse_json(response.content)
     return {"search_queries": result.get("queries", [])}
 
 
-# ── 2. Search (쿼리별 병렬 실행) ─────────────────────────────────────────────
+# ── 2. Search (쿼리별 병렬) ───────────────────────────────────────────────────
 
 def dispatch_searches(state: AgentState) -> list[Send]:
     return [Send("search", {**state, "_query": q}) for q in state["search_queries"]]
 
 
-def search_node(state: dict) -> dict:
-    posts = search_reddit(state["_query"])
-    return {"raw_posts": posts}
+async def search_node(state: dict) -> dict:
+    urls = await search_reddit_urls(state["_query"], before_date=state.get("before_date"))
+    return {"post_urls": urls}
 
 
-# ── 3. Filter ────────────────────────────────────────────────────────────────
+# ── 3. Fetch Posts ────────────────────────────────────────────────────────────
 
-async def filter_node(state: AgentState) -> dict:
-    if not state["raw_posts"]:
-        return {"filtered_posts": []}
-
+async def fetch_posts_node(state: AgentState) -> dict:
     # 중복 URL 제거
     seen = set()
-    unique_posts = []
-    for post in state["raw_posts"]:
-        if post["url"] not in seen:
-            seen.add(post["url"])
-            unique_posts.append(post)
+    unique_urls = []
+    for url in state["post_urls"]:
+        if url not in seen:
+            seen.add(url)
+            unique_urls.append(url)
 
-    posts_text = "\n\n".join(
-        f"[{i}] {p['title']}\n{p['body'][:300]}"
-        for i, p in enumerate(unique_posts)
-    )
+    # 상위 10개 포스트 크롤링 (rate limit 고려해 순차 처리)
+    posts = []
+    for url in unique_urls[:10]:
+        post = await fetch_post_details(url)
+        if post:
+            posts.append(post)
+        await asyncio.sleep(0.5)
+
+    return {"posts": posts}
+
+
+# ── 4. Analyze ────────────────────────────────────────────────────────────────
+
+async def analyze_node(state: AgentState) -> dict:
+    if not state["posts"]:
+        return {"analysis": "관련 포스트를 찾지 못했습니다."}
+
+    posts_text = ""
+    for p in state["posts"]:
+        comments_text = "\n".join(
+            f"  └ (👍{c['score']}) {c['body']}"
+            for c in sorted(p["top_comments"], key=lambda x: -x["score"])[:5]
+        )
+        posts_text += (
+            f"\n### [{p['created_at']}] {p['title']}"
+            f"\n r/{p['subreddit']} | 추천수: {p['score']} | 댓글: {p['num_comments']}"
+            f"\n 본문: {p['body'][:200]}"
+            f"\n 상위 댓글:\n{comments_text}\n"
+        )
 
     response = await llm.ainvoke([
         SystemMessage(content=(
-            "You are a relevance filter. Given the user's intent and a list of posts, "
-            "return indices of genuinely relevant ones. "
-            "Return JSON: {\"relevant_indices\": [0, 2, 5, ...]}"
-        )),
-        HumanMessage(content=f"User intent: {state['user_query']}\n\nPosts:\n{posts_text}"),
-    ])
-
-    result = parse_json(response.content)
-    indices = result.get("relevant_indices", [])
-    return {"filtered_posts": [unique_posts[i] for i in indices if i < len(unique_posts)]}
-
-
-# ── 4. Aggregate ─────────────────────────────────────────────────────────────
-
-async def aggregate_node(state: AgentState) -> dict:
-    if not state["filtered_posts"]:
-        return {"summary": "관련 포스트를 찾지 못했습니다."}
-
-    posts_text = "\n\n".join(
-        f"- {p['title']}\n  {p['body'][:500]}\n  URL: {p['url']}"
-        for p in state["filtered_posts"]
-    )
-
-    response = await llm.ainvoke([
-        SystemMessage(content=(
-            "You are an opinion analyst. Summarize the collected Reddit posts in Korean. "
-            "Structure: 1) 전체 요약 2) 주요 의견 분류 3) 주목할 포스트 (top 3)"
+            "You are an opinion analyst. Analyze Reddit posts and comments in Korean. "
+            "Structure your response:\n"
+            "1) 전체 반응 요약 (긍정/부정/중립 비율 추정)\n"
+            "2) 주요 의견 분류 (가장 많이 동의받은 의견 위주)\n"
+            "3) 주목할 포스트 top 3 (추천수 + 댓글 반응 기준)\n"
+            "4) 결론: 이 주제에 대한 커뮤니티 전반적 온도"
         )),
         HumanMessage(content=(
-            f"검색 의도: {state['user_query']}\n\n"
-            f"수집된 포스트 ({len(state['filtered_posts'])}개):\n{posts_text}"
+            f"검색 의도: {state['user_query']}\n"
+            f"수집된 포스트 ({len(state['posts'])}개):\n{posts_text}"
         )),
     ])
 
-    return {"summary": response.content}
+    return {"analysis": response.content}

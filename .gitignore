@@ -1,4 +1,5 @@
 .env
 docs/
+exps/
 __pycache__/
 *.pyc

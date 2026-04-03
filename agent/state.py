@@ -1,17 +1,27 @@
-from typing import TypedDict, Annotated
+from typing import TypedDict, Annotated, Optional
 import operator
 
 
-class Post(TypedDict):
-    title: str
+class Comment(TypedDict):
     body: str
+    score: int
+
+
+class PostDetail(TypedDict):
+    title: str
     url: str
-    score: float  # Tavily relevance score
+    score: int           # 포스트 추천수
+    num_comments: int
+    body: str
+    subreddit: str
+    created_at: str
+    top_comments: list   # Comment 목록
 
 
 class AgentState(TypedDict):
-    user_query: str                              # 사용자 자연어 요청
-    search_queries: list[str]                    # 생성된 검색어들
-    raw_posts: Annotated[list[Post], operator.add]  # 수집된 원본 결과 (병렬 누적)
-    filtered_posts: list[Post]                   # 관련성 통과한 결과
-    summary: str                                 # 최종 요약
+    user_query: str
+    before_date: Optional[str]
+    search_queries: list[str]
+    post_urls: Annotated[list[str], operator.add]  # 병렬 검색 결과 누적
+    posts: list[PostDetail]                        # 상세 크롤링 결과
+    analysis: str                                  # 최종 분석
