@@ -39,4 +39,5 @@ async def run(user_query: str, before_date: str = None, after_date: str = None):
 
 
 if __name__ == "__main__":
-    asyncio.run(run("Solo Leveling IP를 게임으로 만들어달라는 팬들의 니즈나 수요가 있는지"))
+    asyncio.run(run(user_query="Solo Leveling IP를 게임으로 만들어달라는 팬들의 니즈나 수요가 있는지",
+                    before_date="2023-01-01"))
