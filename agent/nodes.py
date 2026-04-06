@@ -31,7 +31,10 @@ async def plan_queries_node(state: AgentState) -> dict:
     response = await llm.ainvoke([
         SystemMessage(content=(
             "You are a search query generator for Reddit research. "
-            "Convert the user's request into 3-5 effective English search queries. "
+            "Generate 3-5 effective English search queries that find Reddit posts "
+            "where fans EXPRESS DESIRE, wishful thinking, or demand — "
+            "e.g. 'X needs a game', 'I wish X had a game', 'when is X getting a game'. "
+            "Focus on capturing fan demand signals, not reviews or news. "
             'Return JSON: {"queries": ["query1", "query2", ...]}'
         )),
         HumanMessage(content=f"User request: {state['user_query']}"),
@@ -72,6 +75,7 @@ async def fetch_posts_node(state: AgentState) -> dict:
 
     async def fetch_with_limit(url):
         async with sem:
+            await asyncio.sleep(1)
             return await fetch_post_details(url)
 
     results = await asyncio.gather(*[fetch_with_limit(u) for u in unique_urls[:10]])
@@ -92,8 +96,10 @@ async def analyze_node(state: AgentState) -> dict:
     if not state["posts"]:
         return {"analysis": "관련 포스트를 찾지 못했습니다."}
 
+    top_posts = sorted(state["posts"], key=lambda x: -x["score"])[:10]
+
     posts_text = ""
-    for p in state["posts"]:
+    for p in top_posts:
         comments_text = "\n".join(
             f"  └ (👍{c['score']}) {c['body']}"
             for c in sorted(p["top_comments"], key=lambda x: -x["score"])[:5]

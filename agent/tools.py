@@ -1,9 +1,10 @@
 import os
+import asyncio
 import httpx
 from datetime import datetime
 
 
-async def search_reddit_urls(query: str, before_date=None, after_date=None, max_results=10) -> list[str]:
+async def search_reddit_urls(query: str, before_date=None, after_date=None, max_results=20) -> list[str]:
     """Serper.dev로 Reddit 포스트 URL 검색"""
     headers = {
         "X-API-KEY": os.environ["SERPER_API_KEY"],
@@ -49,6 +50,9 @@ async def fetch_post_details(url: str):
             follow_redirects=True,
         ) as client:
             res = await client.get(json_url, params={"limit": 20, "sort": "top"})
+            if res.status_code == 429:
+                await asyncio.sleep(2)
+                res = await client.get(json_url, params={"limit": 20, "sort": "top"})
             if res.status_code != 200:
                 print(f"[fetch] {res.status_code} {url}")
                 return None
